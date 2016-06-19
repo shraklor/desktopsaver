@@ -11,6 +11,7 @@ using System.Runtime.Serialization;
 
 namespace DesktopSaver {
 
+    #region enums
     public enum ShellChangeNotifyEvent : uint {
         SHCNE_RENAMEITEM = 0x00000001,
         SHCNE_CREATE = 0x00000002,
@@ -66,19 +67,25 @@ namespace DesktopSaver {
         PROCESS_VM_READ = 0x0010,
         PROCESS_VM_WRITE = 0x0020
     }
+     
+    public enum ListViewMessage : uint {
+        LVM_FIRST = 0x1000,
+        LVM_GETITEMCOUNT = LVM_FIRST + 4,
+        LVM_GETITEMW = LVM_FIRST + 75,
+        LVM_SETITEMPOSITION = LVM_FIRST + 15,
+        LVM_GETITEMPOSITION = LVM_FIRST + 16,
+    }
+    #endregion
 
     public class DeskTopManager {
-        private const uint LVM_FIRST = 0x1000;
-        private const uint LVM_GETITEMCOUNT = LVM_FIRST + 4;
-        private const uint LVM_GETITEMW = LVM_FIRST + 75;
-        private const uint LVM_SETITEMPOSITION = LVM_FIRST + 15;
-        private const uint LVM_GETITEMPOSITION = LVM_FIRST + 16;
 
         private const uint PAGE_READWRITE = 4;
 
         private const int LVIF_TEXT = 0x0001;
 
+        private const int READ_BUFFER_SIZE = 256;
 
+        #region DllImports
         [DllImport( "kernel32.dll" )]
         private static extern IntPtr VirtualAllocEx( IntPtr hProcess, IntPtr lpAddress, uint dwSize, ProcessAllocationType flAllocationType, ProcessMemoryProtection flProtect );
 
@@ -98,7 +105,7 @@ namespace DesktopSaver {
         private static extern IntPtr OpenProcess( ProcessMemoryOperation dwDesiredAccess, bool bInheritHandle, uint dwProcessId );
 
         [DllImport( "user32.DLL" )]
-        private static extern int SendMessage( IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam );
+        private static extern int SendMessage( IntPtr hWnd, ListViewMessage Msg, IntPtr wParam, IntPtr lParam );
 
         [DllImport( "user32.DLL" )]
         private static extern IntPtr FindWindow( string lpszClass, string lpszWindow );
@@ -111,7 +118,9 @@ namespace DesktopSaver {
 
         [DllImport( "Shell32.dll" )]
         private static extern int SHChangeNotify( ShellChangeNotifyEvent eventId, ShellChangeNotifyFlag flags, IntPtr item1, IntPtr item2 );
+        #endregion
 
+        #region struct
         private struct LVITEM {
             public int mask;
             public int iItem;
@@ -127,8 +136,25 @@ namespace DesktopSaver {
             public int cColumns;
             public IntPtr puColumns;
         }
+        #endregion
 
-        private const int READ_BUFFER_SIZE = 256;
+
+
+        public static event EventHandler<MessageEventArgs> ErrorMessage;
+
+        private static void RaiseErrorMessage( Exception e, string message ) {
+            try {
+                EventHandler<MessageEventArgs> evt = ErrorMessage;
+
+                if ( null != evt ) {
+                    evt( null, new MessageEventArgs( e, message ) );
+                }
+            } catch ( Exception ) {
+
+            }
+        }
+
+
 
         private static IntPtr GetDesktopListView() {
             var hwnd = FindWindow( "Progman", null );
@@ -148,9 +174,11 @@ namespace DesktopSaver {
         public static List<DesktopIcon> GetDesktopIcons() {
             List<DesktopIcon> _return = new List<DesktopIcon>();
 
+            RaiseErrorMessage( null, string.Format( "Begin GetDesktopIcons" ) );
+
             var lvHwnd = GetDesktopListView();
 
-            int iconCount = SendMessage( lvHwnd, LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero );
+            int iconCount = SendMessage( lvHwnd, ListViewMessage.LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero );
 
             uint lvProcessId;
             GetWindowThreadProcessId( lvHwnd, out lvProcessId );
@@ -160,52 +188,59 @@ namespace DesktopSaver {
 
             try {
                 for ( int index = 0; index < iconCount; index++ ) {
-                    byte[] buffer = new byte[READ_BUFFER_SIZE];
-                    LVITEM item = new LVITEM() {
-                        mask = LVIF_TEXT,
-                        iItem = index,
-                        iSubItem = 0,
-                        cchTextMax = buffer.Length,
-                        pszText = ( IntPtr ) ( ( int ) pointer + Marshal.SizeOf( typeof( LVITEM ) ) )
-                    };
-                    LVITEM[] items = new LVITEM[] { item };
+                    try {
+                        byte[] buffer = new byte[READ_BUFFER_SIZE];
+                        LVITEM item = new LVITEM() {
+                            mask = LVIF_TEXT,
+                            iItem = index,
+                            iSubItem = 0,
+                            cchTextMax = buffer.Length,
+                            pszText = ( IntPtr ) ( ( int ) pointer + Marshal.SizeOf( typeof( LVITEM ) ) )
+                        };
+                        LVITEM[] items = new LVITEM[] { item };
 
-                    uint read = 0;
+                        uint read = 0;
 
-                    WriteProcessMemory( lvProcess, pointer, Marshal.UnsafeAddrOfPinnedArrayElement( items, 0 ), Marshal.SizeOf( typeof( LVITEM ) ), ref read );
-                    SendMessage( lvHwnd, LVM_GETITEMW, ( IntPtr ) index, pointer );
-                    ReadProcessMemory( lvProcess, ( IntPtr ) ( ( int ) pointer + Marshal.SizeOf( typeof( LVITEM ) ) ), Marshal.UnsafeAddrOfPinnedArrayElement( buffer, 0 ), buffer.Length, ref read );
-                    item.pszText = ( IntPtr ) ( buffer.Length + Marshal.SizeOf( typeof( LVITEM ) ) );
+                        WriteProcessMemory( lvProcess, pointer, Marshal.UnsafeAddrOfPinnedArrayElement( items, 0 ), Marshal.SizeOf( typeof( LVITEM ) ), ref read );
+                        SendMessage( lvHwnd, ListViewMessage.LVM_GETITEMW, ( IntPtr ) index, pointer );
+                        ReadProcessMemory( lvProcess, ( IntPtr ) ( ( int ) pointer + Marshal.SizeOf( typeof( LVITEM ) ) ), Marshal.UnsafeAddrOfPinnedArrayElement( buffer, 0 ), buffer.Length, ref read );
+                        item.pszText = ( IntPtr ) ( buffer.Length + Marshal.SizeOf( typeof( LVITEM ) ) );
 
-                    var text = Encoding.Unicode.GetString( buffer, 0, ( int ) read ).Trim( '\0' );
+                        var text = Encoding.Unicode.GetString( buffer, 0, ( int ) read ).Trim( '\0' );
 
-                    if ( text.Contains( '\0' ) ) {
-                        text = text.Substring( 0, ( text.IndexOf( '\0' ) ) );
+                        if ( text.Contains( '\0' ) ) {
+                            text = text.Substring( 0, ( text.IndexOf( '\0' ) ) );
+                        }
+
+                        SendMessage( lvHwnd, ListViewMessage.LVM_GETITEMPOSITION, ( IntPtr ) index, pointer );
+                        Point point = new Point();
+                        Point[] points = new Point[] { point };
+                        ReadProcessMemory( lvProcess, pointer, Marshal.UnsafeAddrOfPinnedArrayElement( points, 0 ), Marshal.SizeOf( typeof( Point ) ), ref read );
+                        var icon = new DesktopIcon( index, text, points[0] );
+                        Trace.WriteLine( icon );
+                        _return.Add( icon );
+                    } catch ( Exception e ) {
+                        RaiseErrorMessage( e, string.Format( "Error in GetDesktopIcons with index ({0}) - {1}", index, e.Message ) );
                     }
-
-                    SendMessage( lvHwnd, LVM_GETITEMPOSITION, ( IntPtr ) index, pointer );
-                    Point point = new Point();
-                    Point[] points = new Point[] { point };
-                    ReadProcessMemory( lvProcess, pointer, Marshal.UnsafeAddrOfPinnedArrayElement( points, 0 ), Marshal.SizeOf( typeof( Point ) ), ref read );
-                    var icon = new DesktopIcon( index, text, points[0] );
-                    Trace.WriteLine( icon );
-                    _return.Add( icon );
                 }
             } catch ( Exception ex ) {
-                Trace.WriteLine( string.Format( "ERROR: {0}", ex.Message ) );
+                RaiseErrorMessage( ex, string.Format( "Error in GetDesktopIcons - {0}", ex.Message ) );
             } finally {
                 VirtualFreeEx( lvProcess, pointer, 0, ProcessAllocationType.MEM_RELEASE );
                 CloseHandle( lvProcess );
             }
+
+            RaiseErrorMessage( null, string.Format( "Completed GetDesktopIcons") );
 
             return _return;
         }
 
         public static void SetDesktopIcons( List<DesktopIcon> icons ) {
+            RaiseErrorMessage( null, string.Format( "Begin SetDesktopIcons" ) );
             // for each icon...find the source desktop icon...and update position if found...
             var lvHwnd = GetDesktopListView();
 
-            int iconCount = SendMessage( lvHwnd, LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero );
+            int iconCount = SendMessage( lvHwnd, ListViewMessage.LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero );
 
             uint lvProcessId;
             GetWindowThreadProcessId( lvHwnd, out lvProcessId );
@@ -215,45 +250,61 @@ namespace DesktopSaver {
 
             try {
                 for ( int index = 0; index < iconCount; index++ ) {
-                    byte[] buffer = new byte[256];
-                    LVITEM item = new LVITEM() {
-                        mask = LVIF_TEXT,
-                        iItem = index,
-                        iSubItem = 0,
-                        cchTextMax = buffer.Length,
-                        pszText = ( IntPtr ) ( ( int ) pointer + Marshal.SizeOf( typeof( LVITEM ) ) )
-                    };
-                    LVITEM[] items = new LVITEM[] { item };
+                    try {
+                        byte[] buffer = new byte[256];
+                        LVITEM item = new LVITEM() {
+                            mask = LVIF_TEXT,
+                            iItem = index,
+                            iSubItem = 0,
+                            cchTextMax = buffer.Length,
+                            pszText = ( IntPtr ) ( ( int ) pointer + Marshal.SizeOf( typeof( LVITEM ) ) )
+                        };
+                        LVITEM[] items = new LVITEM[] { item };
 
-                    uint read = 0;
+                        uint read = 0;
 
-                    WriteProcessMemory( lvProcess, pointer, Marshal.UnsafeAddrOfPinnedArrayElement( items, 0 ), Marshal.SizeOf( typeof( LVITEM ) ), ref read );
-                    SendMessage( lvHwnd, LVM_GETITEMW, ( IntPtr ) index, pointer );
-                    ReadProcessMemory( lvProcess, ( IntPtr ) ( ( int ) pointer + Marshal.SizeOf( typeof( LVITEM ) ) ), Marshal.UnsafeAddrOfPinnedArrayElement( buffer, 0 ), buffer.Length, ref read );
-                    item.pszText = ( IntPtr ) ( buffer.Length + Marshal.SizeOf( typeof( LVITEM ) ) );
+                        WriteProcessMemory( lvProcess, pointer, Marshal.UnsafeAddrOfPinnedArrayElement( items, 0 ), Marshal.SizeOf( typeof( LVITEM ) ), ref read );
+                        SendMessage( lvHwnd, ListViewMessage.LVM_GETITEMW, ( IntPtr ) index, pointer );
+                        ReadProcessMemory( lvProcess, ( IntPtr ) ( ( int ) pointer + Marshal.SizeOf( typeof( LVITEM ) ) ), Marshal.UnsafeAddrOfPinnedArrayElement( buffer, 0 ), buffer.Length, ref read );
+                        item.pszText = ( IntPtr ) ( buffer.Length + Marshal.SizeOf( typeof( LVITEM ) ) );
 
-                    var text = Encoding.Unicode.GetString( buffer, 0, ( int ) read ).Trim( '\0' );
+                        var text = Encoding.Unicode.GetString( buffer, 0, ( int ) read ).Trim( '\0' );
 
-                    if ( text.Contains( '\0' ) ) {
-                        text = text.Substring( 0, ( text.IndexOf( '\0' ) ) );
+                        if ( text.Contains( '\0' ) ) {
+                            text = text.Substring( 0, ( text.IndexOf( '\0' ) ) );
+                        }
+
+                        RaiseErrorMessage( null, string.Format( "In SetDesktopIcons placing index ({0}) - {1}", index, text) );
+
+                        // look through list to find this icon, based on text???
+                        var icon = icons.FirstOrDefault( i => i.Text == text && i.Index == index );
+
+                        if ( icon != null ) {
+                            SendMessage( lvHwnd, ListViewMessage.LVM_SETITEMPOSITION, ( IntPtr ) index, MakeLParam( icon.Point.X, icon.Point.Y ) );
+                        } else {
+                            throw new Exception(string.Format( "SetDesktopIcons index ({0}) - {1} ...NOT FOUND", index, text ) );
+                        }
+                    } catch ( Exception e ) {
+                        RaiseErrorMessage( e, string.Format( "Error in SetDesktopIcons with index ({0}) - {1}", index, e.Message ) );
                     }
-
-                    // look through list to find this icon, based on text???
-                    var icon = icons.FirstOrDefault( i => i.Text == text && i.Index == index );
-
-                    if ( icon != null ) {
-                        SendMessage( lvHwnd, LVM_SETITEMPOSITION, ( IntPtr ) index, MakeLParam( icon.Point.X, icon.Point.Y ) );
-                    }
-                }
+                }   // for each desktop icon count
 
                 SHChangeNotify( ShellChangeNotifyEvent.SHCNE_UPDATEITEM, ShellChangeNotifyFlag.SHCNF_IDLIST, IntPtr.Zero, IntPtr.Zero );
             } catch ( Exception ex ) {
-                Trace.WriteLine( string.Format( "ERROR: {0}", ex.Message ) );
+                RaiseErrorMessage( ex, string.Format( "Error in GetDesktopIcons - {0}", ex.Message ) );
             } finally {
                 VirtualFreeEx( lvProcess, pointer, 0, ProcessAllocationType.MEM_RELEASE );
                 CloseHandle( lvProcess );
             }
+
+            RaiseErrorMessage( null, string.Format( "Completed SetDesktopIcons" ) );
         }
+
+
+
+
+
+
 
         private static DesktopIcon GetDesktopIcon( int index ) {
             DesktopIcon _return = null;
@@ -280,7 +331,7 @@ namespace DesktopSaver {
                 WriteProcessMemory( desktop, lviItemMem, itemPointer, Marshal.SizeOf( item ), ref read );
                 Marshal.FreeHGlobal( itemPointer );
 
-                SendMessage( desktop, LVM_GETITEMW, ( IntPtr ) index, lviItemMem );
+                SendMessage( desktop, ListViewMessage.LVM_GETITEMW, ( IntPtr ) index, lviItemMem );
 
                 byte[] buffer = new byte[READ_BUFFER_SIZE];
                 ReadProcessMemory( desktop, lviItemText, Marshal.UnsafeAddrOfPinnedArrayElement( buffer, 0 ), READ_BUFFER_SIZE, ref read );
@@ -293,7 +344,7 @@ namespace DesktopSaver {
                     text = text.Substring( 0, ( text.IndexOf( '\0' ) ) );
                 }
 
-                SendMessage( desktop, LVM_GETITEMPOSITION, ( IntPtr ) index, lviItemMem );
+                SendMessage( desktop, ListViewMessage.LVM_GETITEMPOSITION, ( IntPtr ) index, lviItemMem );
                 Point point = new Point();
                 Point[] points = new Point[] { point };
                 ReadProcessMemory( desktop, lviItemMem, Marshal.UnsafeAddrOfPinnedArrayElement( points, 0 ), Marshal.SizeOf( typeof( Point ) ), ref read );
@@ -317,6 +368,24 @@ namespace DesktopSaver {
             return ( IntPtr ) ( ( ( short ) high << 16 ) | ( low & 0xffff ) );
         }
 
+    }
+     
+    public class MessageEventArgs : EventArgs {
+        private Exception error;
+        private string message;
+
+        public MessageEventArgs( Exception ex, string message ) {
+            this.error = ex;
+            this.message = message;
+        }
+
+        public Exception Error {
+            get { return this.error; }
+        }
+
+        public string Message {
+            get { return this.message; }
+        }
     }
 
     [DataContract]
@@ -355,6 +424,5 @@ namespace DesktopSaver {
             return string.Format( "[{3,-4}] {0,-35} => X:{1}  Y:{2}", Text, Point.X, Point.Y, Index );
         }
     }
-
 
 }

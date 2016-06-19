@@ -17,31 +17,41 @@ namespace DesktopSaver {
     public partial class frmMain : Form {
         private readonly string FILE = string.Format( "{0}.sav", Application.ProductName );
 
+        private delegate void AddLogDeletgate( object sender, MessageEventArgs message );
+
+
         public frmMain() {
             InitializeComponent();
+        }
+
+        private void AddLog( object sender, MessageEventArgs message ) {
+            if ( lstLog.InvokeRequired ) {
+                lstLog.Invoke( new AddLogDeletgate( AddLog ), new object[] { sender, message } );
+            } else {
+                lstLog.SelectedIndex = lstLog.Items.Add( string.Format("{0} - {1}", DateTime.Now.ToString("HH:mm:ss.ff"), message.Message ) );
+            }
         }
 
         private void frmMain_Load( object sender, EventArgs e ) {
         }
 
         private void cmdSave_Click( object sender, EventArgs e ) {
+            DeskTopManager.ErrorMessage += AddLog;
+
             var icons = DeskTopManager.GetDesktopIcons();
 
             // serialize them and save to file in current directory
             SerializeObject<List<DesktopIcon>>( icons, GetWorkingFile() );
+            DeskTopManager.ErrorMessage -= AddLog;
         }
 
         private void cmdRestore_Click( object sender, EventArgs e ) {
+            DeskTopManager.ErrorMessage += AddLog;
             // read from file in current directory, and de-serialize contents
             List<DesktopIcon> icons = DeSerializeObject<List<DesktopIcon>>( GetWorkingFile() );
 
-
-
-            foreach ( var icon in icons ) {
-                Trace.WriteLine( icon );
-            }
-
             DeskTopManager.SetDesktopIcons( icons );
+            DeskTopManager.ErrorMessage -= AddLog;
         }
 
         private string GetWorkingFile() {
@@ -49,6 +59,18 @@ namespace DesktopSaver {
 
             return Path.Combine( here, FILE );
         }
+
+
+
+        private void saveToolStripMenuItem_Click( object sender, EventArgs e ) {
+            cmdSave.PerformClick();
+        }
+
+        private void restoreToolStripMenuItem_Click( object sender, EventArgs e ) {
+            cmdRestore.PerformClick();
+        }
+
+
 
         public void SerializeObject<T>( T serializableObject, string fileName ) {
             if ( serializableObject == null )
@@ -65,7 +87,7 @@ namespace DesktopSaver {
                     stream.Close();
                 }
             } catch ( Exception e ) {
-                Trace.WriteLine( string.Format( "Serialization error: " + e.Message ) );
+                AddLog( null, new MessageEventArgs( e, string.Format( "Serialization error: " + e.Message ) ) );
             }
         }
 
@@ -92,22 +114,10 @@ namespace DesktopSaver {
                     read.Close();
                 }
             } catch ( Exception e ) {
-                Trace.WriteLine( string.Format( "Deserialization error: " + e.Message ) );
+                AddLog( null, new MessageEventArgs( e, string.Format( "Deserialization error: " + e.Message ) ) );
             }
 
             return _return;
-        }
-
-        private void saveToolStripMenuItem_Click( object sender, EventArgs e ) {
-            cmdSave.PerformClick();
-        }
-
-        private void restoreToolStripMenuItem_Click( object sender, EventArgs e ) {
-            cmdRestore.PerformClick();
-        }
-
-        private void frmMain_Load_1( object sender, EventArgs e ) {
-
         }
 
     }
